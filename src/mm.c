@@ -47,7 +47,7 @@ team_t team = {
 
 // read word and write a word at p
 #define GET(p) (*(uint32_t*) (p))
-#define PUT(p, val) (*(uint32_t*) (p)) = (val))
+#define PUT(p, val) (*(uint32_t*) (p) = (val))
 
 // get size and alloc bit from header/footer at p
 #define GET_SIZE(p) (GET(p) & ~0x7)
@@ -67,14 +67,24 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
 
-
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+
+static unsigned char* heap_listp;
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    heap_listp = mem_sbrk(4 * WSIZE);
+    if (heap_listp == (void*) -1)
+        return -1;
+
+    PUT(heap_listp, 0);
+    PUT(heap_listp + WSIZE, PACK(DSIZE, 1));
+    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
+
     return 0;
 }
 
