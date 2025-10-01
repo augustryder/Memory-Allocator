@@ -14,6 +14,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "memlib.h"
 #include "mm.h"
@@ -35,8 +36,33 @@ team_t team = {
     ""
 };
 
+#define WSIZE 4 // word size
+#define DSIZE 8 // double word size
+#define CHUNK_SIZE (1 << 12) // amount to extend heap by
+
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+
+// pack size and allocated bit into a word
+#define PACK(size, alloc) ((size) | (alloc))
+
+// read word and write a word at p
+#define GET(p) (*(uint32_t*) (p))
+#define PUT(p, val) (*(uint32_t*) (p)) = (val))
+
+// get size and alloc bit from header/footer at p
+#define GET_SIZE(p) (GET(p) & ~0x7)
+#define GET_ALLOC(p) (GET(p) & 0x1)
+
+// returns the header or footer pointer from a bp
+#define HEADER_PTR(bp) ((unsigned char*) (bp) - WSIZE)
+#define FOOTER_PTR(bp) ((unsigned char*) (bp) + (GET_SIZE(HEADER_PTR(bp)) - DSIZE))
+
+// returns a pointer to the next or previous block
+#define NEXT_BLOCK_PTR(bp) ((unsigned char*) (bp) + GET_SIZE(HEADER_PTR(bp)))
+#define PREV_BLOCK_PTR(bp) ((unsigned char*) (bp) - GET_SIZE((unsigned char*) bp - DSIZE))
+
 /* single word (4) or double word (8) alignment */
-#define ALIGNMENT 8
+#define ALIGNMENT DSIZE
 
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~0x7)
