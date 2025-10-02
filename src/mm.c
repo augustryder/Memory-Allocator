@@ -75,22 +75,23 @@ static void *coalesce(void *bp);
 static void *next_fit(size_t size);
 static void place(void *bp, size_t size);
 
+void print_heap_list();
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    // printf("mm_init()\n");
     heap_listp = mem_sbrk(4 * WSIZE);
     if (heap_listp == (void *)-1) return -1;
-
     PUT(heap_listp, 0);                             // 4 byte padding word
     PUT(heap_listp + WSIZE, PACK(DSIZE, 1));        // prologue header
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));  // prologue footer
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));      // epilogue
 
     heap_listp += (2 * WSIZE);
-
     if (extend_heap(CHUNK_SIZE / WSIZE) == NULL) return -1;
+    // print_heap_list();
     return 0;
 }
 
@@ -102,6 +103,9 @@ void *mm_malloc(size_t size)
 {
     if (size == 0) return NULL;
 
+    // print_heap_list();
+    // printf("mm_malloc: size %zu\n", size);
+
     void *bp;
     size_t aligned_size = DSIZE + ALIGN(size);
 
@@ -112,7 +116,7 @@ void *mm_malloc(size_t size)
     }
     // No space found, extend heap
     size_t extend_size = MAX(CHUNK_SIZE, aligned_size);
-    if ((bp = extend_heap(extend_size)) == NULL) return NULL;
+    if ((bp = extend_heap(extend_size / WSIZE)) == NULL) return NULL;
     place(bp, aligned_size);
     return bp;
 }
@@ -123,7 +127,12 @@ void *mm_malloc(size_t size)
 void mm_free(void *ptr)
 {
     if (ptr == NULL) return;
-    if (HEADER_PTR(ptr) != FOOTER_PTR(ptr)) return;
+    unsigned char *header = HEADER_PTR(ptr);
+    unsigned char *footer = FOOTER_PTR(ptr);
+    if (GET_SIZE(header) != GET_SIZE(footer) || GET_ALLOC(header) != GET_ALLOC(footer)) return;
+
+    // print_heap_list();
+    // printf("mm_free()\n");
 
     size_t size = GET_SIZE(HEADER_PTR(ptr));
     PUT(HEADER_PTR(ptr), PACK(size, 0));
@@ -206,8 +215,32 @@ static void *next_fit(size_t size)
 
 static void place(void *bp, size_t size)
 {
-    // for now, don't split anything
     size_t block_size = GET_SIZE(HEADER_PTR(bp));
-    PUT(HEADER_PTR(bp), PACK(block_size, 1));
-    PUT(FOOTER_PTR(bp), PACK(block_size, 1));
+    if (block_size - size >= 2 * DSIZE)
+    {
+        // split block
+        PUT(HEADER_PTR(bp), PACK(size, 1));
+        PUT(FOOTER_PTR(bp), PACK(size, 1));
+
+        PUT(HEADER_PTR(NEXT_BLOCK_PTR(bp)), PACK(block_size - size, 0));
+        PUT(FOOTER_PTR(NEXT_BLOCK_PTR(bp)), PACK(block_size - size, 0));
+    }
+    else
+    {
+        // don't split
+        PUT(HEADER_PTR(bp), PACK(block_size, 1));
+        PUT(FOOTER_PTR(bp), PACK(block_size, 1));
+    }
+}
+
+void print_heap_list()
+{
+    void *bp = (void *)heap_listp;
+    while (GET_SIZE(HEADER_PTR(bp)) != 0)
+    {
+        int size = GET_SIZE(HEADER_PTR(bp));
+        int allocated = GET_ALLOC(HEADER_PTR(bp));
+        printf("%d, %d\n", allocated, size);
+        bp = NEXT_BLOCK_PTR(bp);
+    }
 }
