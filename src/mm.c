@@ -72,6 +72,8 @@ team_t team = {
 static unsigned char *heap_listp;
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
+static void *next_fit(size_t size);
+static void place(void *bp, size_t size);
 
 /*
  * mm_init - initialize the malloc package.
@@ -98,21 +100,36 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
-    int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *p = mem_sbrk(newsize);
-    if (p == (void *)-1)
-        return NULL;
-    else
+    if (size == 0) return NULL;
+
+    void *bp;
+    size_t aligned_size = DSIZE + ALIGN(size);
+
+    if ((bp = next_fit(aligned_size)) != NULL)
     {
-        *(size_t *)p = size;
-        return (void *)((char *)p + SIZE_T_SIZE);
+        place(bp, aligned_size);
+        return bp;
     }
+    // No space found, extend heap
+    size_t extend_size = MAX(CHUNK_SIZE, aligned_size);
+    if ((bp = extend_heap(extend_size)) == NULL) return NULL;
+    place(bp, aligned_size);
+    return bp;
 }
 
 /*
  * mm_free - Freeing a block does nothing.
  */
-void mm_free(void *ptr) {}
+void mm_free(void *ptr)
+{
+    if (ptr == NULL) return;
+    if (HEADER_PTR(ptr) != FOOTER_PTR(ptr)) return;
+
+    size_t size = GET_SIZE(HEADER_PTR(ptr));
+    PUT(HEADER_PTR(ptr), PACK(size, 0));
+    PUT(FOOTER_PTR(ptr), PACK(size, 0));
+    coalesce(ptr);
+}
 
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
@@ -174,4 +191,23 @@ static void *coalesce(void *bp)
         bp = PREV_BLOCK_PTR(bp);
     }
     return bp;
+}
+
+static void *next_fit(size_t size)
+{
+    void *bp = (void *)heap_listp;
+    while (GET_SIZE(HEADER_PTR(bp)) != 0)
+    {
+        if (GET_ALLOC(HEADER_PTR(bp)) == 0 && GET_SIZE(HEADER_PTR(bp)) >= size) return bp;
+        bp = NEXT_BLOCK_PTR(bp);
+    }
+    return NULL;
+}
+
+static void place(void *bp, size_t size)
+{
+    // for now, don't split anything
+    size_t block_size = GET_SIZE(HEADER_PTR(bp));
+    PUT(HEADER_PTR(bp), PACK(block_size, 1));
+    PUT(FOOTER_PTR(bp), PACK(block_size, 1));
 }
