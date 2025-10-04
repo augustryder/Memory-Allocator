@@ -57,6 +57,10 @@ team_t team = {
 #define HEADER_PTR(bp) ((unsigned char *)(bp) - WSIZE)
 #define FOOTER_PTR(bp) ((unsigned char *)(bp) + (GET_SIZE(HEADER_PTR(bp)) - DSIZE))
 
+// returns the previous or next free block from a bp
+#define NEXT_FREE_PTR(bp) ((uint32_t *)(bp))
+#define PREV_FREE_PTR(bp) ((uint32_t *)(bp) + 1)
+
 // returns a pointer to the next or previous block
 #define NEXT_BLOCK_PTR(bp) ((unsigned char *)(bp) + GET_SIZE(HEADER_PTR(bp)))
 #define PREV_BLOCK_PTR(bp) ((unsigned char *)(bp) - GET_SIZE((unsigned char *)bp - DSIZE))
@@ -70,10 +74,15 @@ team_t team = {
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 static unsigned char *heap_listp;
+static uint32_t *free_listp;
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
-static void *next_fit(size_t size);
+static void *first_fit(size_t size);
 static void place(void *bp, size_t size);
+static void insert_free(void *bp);
+static void remove_free(void *bp);
+static void *next_free(void *bp);
+static void *prev_free(void *bp);
 
 void print_heap_list();
 /*
@@ -109,7 +118,7 @@ void *mm_malloc(size_t size)
     void *bp;
     size_t aligned_size = DSIZE + ALIGN(size);
 
-    if ((bp = next_fit(aligned_size)) != NULL)
+    if ((bp = first_fit(aligned_size)) != NULL)
     {
         place(bp, aligned_size);
         return bp;
@@ -164,9 +173,9 @@ static void *extend_heap(size_t words)
     char *bp = mem_sbrk(size);
     if (bp == (void *)-1) return NULL;
 
-    PUT(HEADER_PTR(bp), PACK(size, 0));
-    PUT(FOOTER_PTR(bp), PACK(size, 0));
-    PUT(HEADER_PTR(NEXT_BLOCK_PTR(bp)), PACK(0, 1));
+    PUT(HEADER_PTR(bp), PACK(size, 0));               // set header
+    PUT(FOOTER_PTR(bp), PACK(size, 0));               // set footer
+    PUT(HEADER_PTR(NEXT_BLOCK_PTR(bp)), PACK(0, 1));  // set epilogue
 
     return coalesce(bp);
 }
@@ -199,10 +208,11 @@ static void *coalesce(void *bp)
         PUT(FOOTER_PTR(NEXT_BLOCK_PTR(bp)), PACK(size, 0));
         bp = PREV_BLOCK_PTR(bp);
     }
+    insert_free(bp);
     return bp;
 }
 
-static void *next_fit(size_t size)
+static void *first_fit(size_t size)
 {
     void *bp = (void *)heap_listp;
     while (GET_SIZE(HEADER_PTR(bp)) != 0)
@@ -244,3 +254,46 @@ void print_heap_list()
         bp = NEXT_BLOCK_PTR(bp);
     }
 }
+
+// Free list functionality
+
+static void insert_free(void *bp)
+{
+    // set prev and next for current block
+    PUT(NEXT_FREE_PTR(bp), free_listp);
+    PUT(PREV_FREE_PTR(bp), NULL);
+    // update prev for free list head and update head
+    PUT(PREV_FREE_PTR(free_listp), bp);
+    free_listp = bp;
+}
+
+static void remove_free(void *bp)
+{
+    // set prev->next = curr->next
+    uint32_t *prev = prev_free(bp);
+    uint32_t *next = next_free(bp);
+
+    if (prev != NULL && next != NULL)
+    {
+        PUT(NEXT_FREE_PTR(prev), next);
+        PUT(PREV_FREE_PTR(next), prev);
+    }
+    else if (prev == NULL && next != NULL)
+    {
+        free_listp = next;
+        PUT(PREV_FREE_PTR(free_listp), NULL);
+    }
+    else if (prev != NULL && next == NULL)
+    {
+        PUT(NEXT_FREE_PTR(prev), NULL);
+    }
+    else
+    {
+        free_listp = NULL;
+    }
+
+    PUT(PREV_FREE_PTR(bp), NULL);
+    PUT(NEXT_FREE_PTR(bp), NULL);
+}
+static void *next_free(void *bp);
+static void *prev_free(void *bp);
