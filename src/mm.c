@@ -89,12 +89,14 @@ static void *next_free(void *bp);
 static void *prev_free(void *bp);
 
 void print_heap_list();
+void print_free_list();
+
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    // printf("mm_init()\n");
+    free_listp = NULL;
     heap_listp = mem_sbrk(4 * WSIZE);
     if (heap_listp == (void *)-1) return -1;
     PUT(heap_listp, 0);                             // 4 byte padding word
@@ -104,7 +106,6 @@ int mm_init(void)
 
     heap_listp += (2 * WSIZE);
     if (extend_heap(CHUNK_SIZE / WSIZE) == NULL) return -1;
-    // print_heap_list();
     return 0;
 }
 
@@ -115,9 +116,6 @@ int mm_init(void)
 void *mm_malloc(size_t size)
 {
     if (size == 0) return NULL;
-
-    print_heap_list();
-    printf("mm_malloc: size %zu\n", size);
 
     void *bp;
     size_t aligned_size = DSIZE + ALIGN(size);
@@ -145,9 +143,6 @@ void mm_free(void *ptr)
     uint32_t *header = HEADER_PTR(ptr);
     uint32_t *footer = FOOTER_PTR(ptr);
     if (GET_SIZE(header) != GET_SIZE(footer) || GET_ALLOC(header) != GET_ALLOC(footer)) return;
-
-    print_heap_list();
-    printf("mm_free()\n");
 
     uint32_t size = GET_SIZE(HEADER_PTR(ptr));
     PUT(HEADER_PTR(ptr), PACK(size, 0));
@@ -194,12 +189,14 @@ static void *coalesce(void *bp)
 
     if (prev_allocated == 1 && next_allocated == 0)
     {
+        remove_free(NEXT_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(bp), PACK(size, 0));
         PUT(FOOTER_PTR(bp), PACK(size, 0));
     }
     else if (prev_allocated == 0 && next_allocated == 1)
     {
+        remove_free(PREV_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(PREV_BLOCK_PTR(bp)), PACK(size, 0));
         PUT(FOOTER_PTR(bp), PACK(size, 0));
@@ -207,6 +204,8 @@ static void *coalesce(void *bp)
     }
     else if (prev_allocated == 0 && next_allocated == 0)
     {
+        remove_free(PREV_BLOCK_PTR(bp));
+        remove_free(NEXT_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(bp))) + GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(PREV_BLOCK_PTR(bp)), PACK(size, 0));
         PUT(FOOTER_PTR(NEXT_BLOCK_PTR(bp)), PACK(size, 0));
@@ -251,6 +250,7 @@ static void place(void *bp, uint32_t size)
 
 void print_heap_list()
 {
+    printf("HEAP LIST:\n");
     void *bp = (void *)heap_listp;
     while (GET_SIZE(HEADER_PTR(bp)) != 0)
     {
@@ -259,8 +259,21 @@ void print_heap_list()
         printf("%d, %d\n", allocated, size);
         bp = NEXT_BLOCK_PTR(bp);
     }
+    printf("\n");
 }
 
+void print_free_list()
+{
+    printf("FREE LIST: ");
+    void *bp = free_listp;
+    while (bp != NULL)
+    {
+        int size = GET_SIZE(HEADER_PTR(bp));
+        printf("(size: %d, head: %p) ", size, bp);
+        bp = next_free(bp);
+    }
+    printf("\n");
+}
 // Free list functionality
 
 static void insert_free(void *bp)
