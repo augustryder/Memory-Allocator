@@ -45,6 +45,10 @@ team_t team = {
 // pack size and allocated bit into a word
 #define PACK(size, alloc) ((size) | (alloc))
 
+// read and write a ptr at p
+#define GET_PTR(p) (*((void **)(p)))
+#define PUT_PTR(p, v) (*((void **)(p))) = (v)
+
 // read word and write a word at p
 #define GET(p) (*(uint32_t *)(p))
 #define PUT(p, val) (*(uint32_t *)(p) = (val))
@@ -54,16 +58,16 @@ team_t team = {
 #define GET_ALLOC(p) (GET(p) & 0x1)
 
 // returns the header or footer pointer from a bp
-#define HEADER_PTR(bp) ((unsigned char *)(bp) - WSIZE)
-#define FOOTER_PTR(bp) ((unsigned char *)(bp) + (GET_SIZE(HEADER_PTR(bp)) - DSIZE))
+#define HEADER_PTR(bp) ((uint32_t *)((char *)(bp) - WSIZE))
+#define FOOTER_PTR(bp) ((uint32_t *)((char *)(bp) + (GET_SIZE(HEADER_PTR(bp)) - DSIZE)))
 
-// returns the previous or next free block from a bp
-#define NEXT_FREE_PTR(bp) ((uint32_t *)(bp))
-#define PREV_FREE_PTR(bp) ((uint32_t *)(bp) + 1)
+// returns a pointer to the pointer of the next/prev free block
+#define NEXT_FREE_PTR(bp) ((uintptr_t *)(bp))
+#define PREV_FREE_PTR(bp) ((uintptr_t *)(bp) + 1)
 
 // returns a pointer to the next or previous block
-#define NEXT_BLOCK_PTR(bp) ((unsigned char *)(bp) + GET_SIZE(HEADER_PTR(bp)))
-#define PREV_BLOCK_PTR(bp) ((unsigned char *)(bp) - GET_SIZE((unsigned char *)bp - DSIZE))
+#define NEXT_BLOCK_PTR(bp) ((void *)((char *)(bp) + GET_SIZE(HEADER_PTR(bp))))
+#define PREV_BLOCK_PTR(bp) ((void *)((char *)(bp) - GET_SIZE((char *)bp - DSIZE)))
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT DSIZE
@@ -71,14 +75,14 @@ team_t team = {
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
+#define MIN_FREE_BLOCK_SIZE ALIGN(DSIZE + 2 * sizeof(void *))
 
 static unsigned char *heap_listp;
-static uint32_t *free_listp;
-static void *extend_heap(size_t words);
+static void *free_listp;
+static void *extend_heap(uint32_t words);
 static void *coalesce(void *bp);
-static void *first_fit(size_t size);
-static void place(void *bp, size_t size);
+static void *first_fit(uint32_t size);
+static void place(void *bp, uint32_t size);
 static void insert_free(void *bp);
 static void remove_free(void *bp);
 static void *next_free(void *bp);
@@ -112,20 +116,22 @@ void *mm_malloc(size_t size)
 {
     if (size == 0) return NULL;
 
-    // print_heap_list();
-    // printf("mm_malloc: size %zu\n", size);
+    print_heap_list();
+    printf("mm_malloc: size %zu\n", size);
 
     void *bp;
     size_t aligned_size = DSIZE + ALIGN(size);
 
     if ((bp = first_fit(aligned_size)) != NULL)
     {
+        remove_free(bp);
         place(bp, aligned_size);
         return bp;
     }
     // No space found, extend heap
     size_t extend_size = MAX(CHUNK_SIZE, aligned_size);
     if ((bp = extend_heap(extend_size / WSIZE)) == NULL) return NULL;
+    remove_free(bp);
     place(bp, aligned_size);
     return bp;
 }
@@ -136,14 +142,14 @@ void *mm_malloc(size_t size)
 void mm_free(void *ptr)
 {
     if (ptr == NULL) return;
-    unsigned char *header = HEADER_PTR(ptr);
-    unsigned char *footer = FOOTER_PTR(ptr);
+    uint32_t *header = HEADER_PTR(ptr);
+    uint32_t *footer = FOOTER_PTR(ptr);
     if (GET_SIZE(header) != GET_SIZE(footer) || GET_ALLOC(header) != GET_ALLOC(footer)) return;
 
-    // print_heap_list();
-    // printf("mm_free()\n");
+    print_heap_list();
+    printf("mm_free()\n");
 
-    size_t size = GET_SIZE(HEADER_PTR(ptr));
+    uint32_t size = GET_SIZE(HEADER_PTR(ptr));
     PUT(HEADER_PTR(ptr), PACK(size, 0));
     PUT(FOOTER_PTR(ptr), PACK(size, 0));
     coalesce(ptr);
@@ -160,16 +166,16 @@ void *mm_realloc(void *ptr, size_t size)
 
     newptr = mm_malloc(size);
     if (newptr == NULL) return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    copySize = *(size_t *)((char *)oldptr - ALIGN(sizeof(size_t)));
     if (size < copySize) copySize = size;
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
 }
 
-static void *extend_heap(size_t words)
+static void *extend_heap(uint32_t words)
 {
-    size_t size = (words % 2 == 0) ? words * WSIZE : (words + 1) * WSIZE;
+    uint32_t size = (words % 2 == 0) ? words * WSIZE : (words + 1) * WSIZE;
     char *bp = mem_sbrk(size);
     if (bp == (void *)-1) return NULL;
 
@@ -184,9 +190,7 @@ static void *coalesce(void *bp)
 {
     uint32_t prev_allocated = GET_ALLOC(FOOTER_PTR(PREV_BLOCK_PTR(bp)));
     uint32_t next_allocated = GET_ALLOC(HEADER_PTR(NEXT_BLOCK_PTR(bp)));
-    size_t size = GET_SIZE(HEADER_PTR(bp));
-
-    if (prev_allocated == 1 && next_allocated == 1) return bp;
+    uint32_t size = GET_SIZE(HEADER_PTR(bp));
 
     if (prev_allocated == 1 && next_allocated == 0)
     {
@@ -201,7 +205,7 @@ static void *coalesce(void *bp)
         PUT(FOOTER_PTR(bp), PACK(size, 0));
         bp = PREV_BLOCK_PTR(bp);
     }
-    else
+    else if (prev_allocated == 0 && next_allocated == 0)
     {
         size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(bp))) + GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(PREV_BLOCK_PTR(bp)), PACK(size, 0));
@@ -212,21 +216,22 @@ static void *coalesce(void *bp)
     return bp;
 }
 
-static void *first_fit(size_t size)
+static void *first_fit(uint32_t size)
 {
-    void *bp = (void *)heap_listp;
-    while (GET_SIZE(HEADER_PTR(bp)) != 0)
+    void *bp = free_listp;
+    while (bp != NULL)
     {
-        if (GET_ALLOC(HEADER_PTR(bp)) == 0 && GET_SIZE(HEADER_PTR(bp)) >= size) return bp;
-        bp = NEXT_BLOCK_PTR(bp);
+        if (GET_SIZE(HEADER_PTR(bp)) >= size) return bp;
+        bp = next_free(bp);
     }
     return NULL;
 }
 
-static void place(void *bp, size_t size)
+static void place(void *bp, uint32_t size)
 {
-    size_t block_size = GET_SIZE(HEADER_PTR(bp));
-    if (block_size - size >= 2 * DSIZE)
+    uint32_t block_size = GET_SIZE(HEADER_PTR(bp));
+    size = MAX(size, MIN_FREE_BLOCK_SIZE);
+    if (block_size - size >= MIN_FREE_BLOCK_SIZE)
     {
         // split block
         PUT(HEADER_PTR(bp), PACK(size, 1));
@@ -234,6 +239,7 @@ static void place(void *bp, size_t size)
 
         PUT(HEADER_PTR(NEXT_BLOCK_PTR(bp)), PACK(block_size - size, 0));
         PUT(FOOTER_PTR(NEXT_BLOCK_PTR(bp)), PACK(block_size - size, 0));
+        insert_free(NEXT_BLOCK_PTR(bp));
     }
     else
     {
@@ -260,40 +266,53 @@ void print_heap_list()
 static void insert_free(void *bp)
 {
     // set prev and next for current block
-    PUT(NEXT_FREE_PTR(bp), free_listp);
-    PUT(PREV_FREE_PTR(bp), NULL);
+    PUT_PTR(NEXT_FREE_PTR(bp), free_listp);
+    PUT_PTR(PREV_FREE_PTR(bp), NULL);
     // update prev for free list head and update head
-    PUT(PREV_FREE_PTR(free_listp), bp);
+    if (free_listp != NULL)
+    {
+        PUT_PTR(PREV_FREE_PTR(free_listp), bp);
+    }
+
     free_listp = bp;
 }
 
 static void remove_free(void *bp)
 {
-    // set prev->next = curr->next
-    uint32_t *prev = prev_free(bp);
-    uint32_t *next = next_free(bp);
+    void *prev = prev_free(bp);
+    void *next = next_free(bp);
 
     if (prev != NULL && next != NULL)
     {
-        PUT(NEXT_FREE_PTR(prev), next);
-        PUT(PREV_FREE_PTR(next), prev);
+        PUT_PTR(NEXT_FREE_PTR(prev), next);
+        PUT_PTR(PREV_FREE_PTR(next), prev);
     }
     else if (prev == NULL && next != NULL)
     {
         free_listp = next;
-        PUT(PREV_FREE_PTR(free_listp), NULL);
+        PUT_PTR(PREV_FREE_PTR(free_listp), NULL);
     }
     else if (prev != NULL && next == NULL)
     {
-        PUT(NEXT_FREE_PTR(prev), NULL);
+        PUT_PTR(NEXT_FREE_PTR(prev), NULL);
     }
     else
     {
         free_listp = NULL;
     }
 
-    PUT(PREV_FREE_PTR(bp), NULL);
-    PUT(NEXT_FREE_PTR(bp), NULL);
+    PUT_PTR(PREV_FREE_PTR(bp), NULL);
+    PUT_PTR(NEXT_FREE_PTR(bp), NULL);
 }
-static void *next_free(void *bp);
-static void *prev_free(void *bp);
+
+static void *next_free(void *bp)
+{
+    if (bp == NULL) return NULL;
+    return GET_PTR(NEXT_FREE_PTR(bp));
+}
+
+static void *prev_free(void *bp)
+{
+    if (bp == NULL) return NULL;
+    return GET_PTR(PREV_FREE_PTR(bp));
+}
