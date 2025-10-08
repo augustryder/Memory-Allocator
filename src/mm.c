@@ -1,14 +1,4 @@
-/*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- *
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
- *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
- */
+
 #include "mm.h"
 
 #include <assert.h>
@@ -20,10 +10,6 @@
 
 #include "memlib.h"
 
-/*********************************************************
- * NOTE TO STUDENTS: Before you do anything else, please
- * provide your team information in the following struct.
- ********************************************************/
 team_t team = {
     /* Team name */
     "Team August",
@@ -69,65 +55,78 @@ team_t team = {
 #define NEXT_BLOCK_PTR(bp) ((void *)((char *)(bp) + GET_SIZE(HEADER_PTR(bp))))
 #define PREV_BLOCK_PTR(bp) ((void *)((char *)(bp) - GET_SIZE((char *)bp - DSIZE)))
 
-/* single word (4) or double word (8) alignment */
 #define ALIGNMENT DSIZE
 
-/* rounds up to the nearest multiple of ALIGNMENT */
+// rounds up to the nearest multiple of ALIGNMENT
 #define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
 
-#define MIN_FREE_BLOCK_SIZE ALIGN(DSIZE + 2 * sizeof(void *))
+#define MIN_BLOCK_SIZE ALIGN(DSIZE + 2 * sizeof(void *))
 
-static unsigned char *heap_listp;
-static void *free_listp;
+#define NUM_LISTS 12
+static void *segregated_lists[NUM_LISTS];
+
+static void *heap_list_ptr;
+
 static void *extend_heap(uint32_t words);
 static void *coalesce(void *bp);
-static void *first_fit(uint32_t size);
 static void place(void *bp, uint32_t size);
+
+static void *first_fit(uint32_t size);
+
+static int get_list_index(uint32_t size);
 static void insert_free(void *bp);
 static void remove_free(void *bp);
 static void *next_free(void *bp);
 static void *prev_free(void *bp);
 
-void print_heap_list();
-void print_free_list();
+static void print_heap_list();
+static void print_free_list(void *free_list_ptr);
+static void print_segregated_lists();
 
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    free_listp = NULL;
-    heap_listp = mem_sbrk(4 * WSIZE);
-    if (heap_listp == (void *)-1) return -1;
-    PUT(heap_listp, 0);                             // 4 byte padding word
-    PUT(heap_listp + WSIZE, PACK(DSIZE, 1));        // prologue header
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));  // prologue footer
-    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));      // epilogue
+    // Initialize segregated lists
+    for (int i = 0; i < NUM_LISTS; ++i)
+    {
+        segregated_lists[i] = NULL;
+    }
 
-    heap_listp += (2 * WSIZE);
+    // Initialize start of heap
+    heap_list_ptr = mem_sbrk(4 * WSIZE);
+    if (heap_list_ptr == (void *)-1) return -1;
+    PUT(heap_list_ptr, 0);                             // 4 byte padding word
+    PUT(heap_list_ptr + WSIZE, PACK(DSIZE, 1));        // prologue header
+    PUT(heap_list_ptr + (2 * WSIZE), PACK(DSIZE, 1));  // prologue footer
+    PUT(heap_list_ptr + (3 * WSIZE), PACK(0, 1));      // epilogue
+    heap_list_ptr += (2 * WSIZE);
+
+    // Add first free block
     if (extend_heap(CHUNK_SIZE / WSIZE) == NULL) return -1;
     return 0;
 }
 
 /*
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
+ * mm_malloc - Allocate a block using first fit with a segregated list.
  */
 void *mm_malloc(size_t size)
 {
     if (size == 0) return NULL;
 
-    void *bp;
-    size_t aligned_size = DSIZE + ALIGN(size);
+    uint32_t aligned_size = DSIZE + ALIGN(size);
+    void *bp = first_fit(aligned_size);
 
-    if ((bp = first_fit(aligned_size)) != NULL)
+    if (bp != NULL)
     {
         remove_free(bp);
         place(bp, aligned_size);
         return bp;
     }
+
     // No space found, extend heap
-    size_t extend_size = MAX(CHUNK_SIZE, aligned_size);
+    uint32_t extend_size = MAX(CHUNK_SIZE, aligned_size);
     if ((bp = extend_heap(extend_size / WSIZE)) == NULL) return NULL;
     remove_free(bp);
     place(bp, aligned_size);
@@ -135,15 +134,17 @@ void *mm_malloc(size_t size)
 }
 
 /*
- * mm_free - Freeing a block does nothing.
+ * mm_free - Free a block and coalesce.
  */
 void mm_free(void *ptr)
 {
+    // Make sure pointer is valid
     if (ptr == NULL) return;
     uint32_t *header = HEADER_PTR(ptr);
     uint32_t *footer = FOOTER_PTR(ptr);
     if (GET_SIZE(header) != GET_SIZE(footer) || GET_ALLOC(header) != GET_ALLOC(footer)) return;
 
+    // Update headers and coalesce
     uint32_t size = GET_SIZE(HEADER_PTR(ptr));
     PUT(HEADER_PTR(ptr), PACK(size, 0));
     PUT(FOOTER_PTR(ptr), PACK(size, 0));
@@ -168,6 +169,10 @@ void *mm_realloc(void *ptr, size_t size)
     return newptr;
 }
 
+/*
+ * Static Helper Functions
+ */
+
 static void *extend_heap(uint32_t words)
 {
     uint32_t size = (words % 2 == 0) ? words * WSIZE : (words + 1) * WSIZE;
@@ -189,6 +194,7 @@ static void *coalesce(void *bp)
 
     if (prev_allocated == 1 && next_allocated == 0)
     {
+        // Coalesce with next block
         remove_free(NEXT_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(bp), PACK(size, 0));
@@ -196,6 +202,7 @@ static void *coalesce(void *bp)
     }
     else if (prev_allocated == 0 && next_allocated == 1)
     {
+        // Coalesce with previous block
         remove_free(PREV_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(bp)));
         PUT(HEADER_PTR(PREV_BLOCK_PTR(bp)), PACK(size, 0));
@@ -204,6 +211,7 @@ static void *coalesce(void *bp)
     }
     else if (prev_allocated == 0 && next_allocated == 0)
     {
+        // Coalesce with both neighbor blocks
         remove_free(PREV_BLOCK_PTR(bp));
         remove_free(NEXT_BLOCK_PTR(bp));
         size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(bp))) + GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(bp)));
@@ -217,11 +225,14 @@ static void *coalesce(void *bp)
 
 static void *first_fit(uint32_t size)
 {
-    void *bp = free_listp;
-    while (bp != NULL)
+    for (int i = get_list_index(size); i < NUM_LISTS; ++i)
     {
-        if (GET_SIZE(HEADER_PTR(bp)) >= size) return bp;
-        bp = next_free(bp);
+        void *bp = segregated_lists[i];
+        while (bp != NULL)
+        {
+            if (GET_SIZE(HEADER_PTR(bp)) >= size) return bp;
+            bp = next_free(bp);
+        }
     }
     return NULL;
 }
@@ -229,10 +240,11 @@ static void *first_fit(uint32_t size)
 static void place(void *bp, uint32_t size)
 {
     uint32_t block_size = GET_SIZE(HEADER_PTR(bp));
-    size = MAX(size, MIN_FREE_BLOCK_SIZE);
-    if (block_size - size >= MIN_FREE_BLOCK_SIZE)
+    size = MAX(size, MIN_BLOCK_SIZE);
+
+    if (block_size - size >= MIN_BLOCK_SIZE)
     {
-        // split block
+        // Split block
         PUT(HEADER_PTR(bp), PACK(size, 1));
         PUT(FOOTER_PTR(bp), PACK(size, 1));
 
@@ -242,56 +254,52 @@ static void place(void *bp, uint32_t size)
     }
     else
     {
-        // don't split
+        // Don't split block
         PUT(HEADER_PTR(bp), PACK(block_size, 1));
         PUT(FOOTER_PTR(bp), PACK(block_size, 1));
     }
 }
 
-void print_heap_list()
-{
-    printf("HEAP LIST:\n");
-    void *bp = (void *)heap_listp;
-    while (GET_SIZE(HEADER_PTR(bp)) != 0)
-    {
-        int size = GET_SIZE(HEADER_PTR(bp));
-        int allocated = GET_ALLOC(HEADER_PTR(bp));
-        printf("%d, %d\n", allocated, size);
-        bp = NEXT_BLOCK_PTR(bp);
-    }
-    printf("\n");
-}
+/*
+ * Free List Functionality
+ */
 
-void print_free_list()
+static int get_list_index(uint32_t size)
 {
-    printf("FREE LIST: ");
-    void *bp = free_listp;
-    while (bp != NULL)
-    {
-        int size = GET_SIZE(HEADER_PTR(bp));
-        printf("(size: %d, head: %p) ", size, bp);
-        bp = next_free(bp);
-    }
-    printf("\n");
+    if (size == 24) return 0;
+    if (size == 32) return 1;
+    if (size == 40) return 2;
+    if (size == 48) return 3;
+    if (size <= 64) return 4;
+    if (size <= 128) return 5;
+    if (size <= 256) return 6;
+    if (size <= 512) return 7;
+    if (size <= 1024) return 8;
+    if (size <= 2048) return 9;
+    if (size <= 4096) return 10;
+    return 11;
 }
-// Free list functionality
 
 static void insert_free(void *bp)
 {
-    // set prev and next for current block
-    PUT_PTR(NEXT_FREE_PTR(bp), free_listp);
-    PUT_PTR(PREV_FREE_PTR(bp), NULL);
-    // update prev for free list head and update head
-    if (free_listp != NULL)
-    {
-        PUT_PTR(PREV_FREE_PTR(free_listp), bp);
-    }
+    int idx = get_list_index(GET_SIZE(HEADER_PTR(bp)));
+    void *free_list_ptr = segregated_lists[idx];
 
-    free_listp = bp;
+    // Set prev and next for current block
+    PUT_PTR(NEXT_FREE_PTR(bp), free_list_ptr);
+    PUT_PTR(PREV_FREE_PTR(bp), NULL);
+
+    // Connect the rest of the list and update head
+    if (free_list_ptr != NULL) PUT_PTR(PREV_FREE_PTR(free_list_ptr), bp);
+
+    segregated_lists[idx] = bp;
 }
 
 static void remove_free(void *bp)
 {
+    int idx = get_list_index(GET_SIZE(HEADER_PTR(bp)));
+    void *free_list_ptr = segregated_lists[idx];
+
     void *prev = prev_free(bp);
     void *next = next_free(bp);
 
@@ -302,8 +310,8 @@ static void remove_free(void *bp)
     }
     else if (prev == NULL && next != NULL)
     {
-        free_listp = next;
-        PUT_PTR(PREV_FREE_PTR(free_listp), NULL);
+        segregated_lists[idx] = next;
+        PUT_PTR(PREV_FREE_PTR(segregated_lists[idx]), NULL);
     }
     else if (prev != NULL && next == NULL)
     {
@@ -311,7 +319,7 @@ static void remove_free(void *bp)
     }
     else
     {
-        free_listp = NULL;
+        segregated_lists[idx] = NULL;
     }
 
     PUT_PTR(PREV_FREE_PTR(bp), NULL);
@@ -328,4 +336,46 @@ static void *prev_free(void *bp)
 {
     if (bp == NULL) return NULL;
     return GET_PTR(PREV_FREE_PTR(bp));
+}
+
+/*
+ * Printers
+ */
+
+static void print_heap_list()
+{
+    printf("HEAP LIST:\n");
+    void *bp = heap_list_ptr;
+    while (GET_SIZE(HEADER_PTR(bp)) != 0)
+    {
+        uint32_t size = GET_SIZE(HEADER_PTR(bp));
+        uint32_t allocated = GET_ALLOC(HEADER_PTR(bp));
+        printf("%d, %d\n", allocated, size);
+        bp = NEXT_BLOCK_PTR(bp);
+    }
+    printf("\n");
+}
+
+static void print_free_list(void *free_list_ptr)
+{
+    printf("FREE LIST: ");
+    void *bp = free_list_ptr;
+    while (bp != NULL)
+    {
+        uint32_t size = GET_SIZE(HEADER_PTR(bp));
+        printf("(size: %d, addr: %p, prev: %p, next: %p) ", size, bp, GET_PTR(PREV_FREE_PTR(bp)),
+               GET_PTR(NEXT_FREE_PTR(bp)));
+        bp = next_free(bp);
+    }
+    printf("\n");
+}
+
+static void print_segregated_lists()
+{
+    printf("--- SEGREGATED LIST ---\n");
+    for (int i = 0; i < NUM_LISTS; ++i)
+    {
+        print_free_list(segregated_lists[i]);
+    }
+    printf(" ---------------------- \n");
 }
