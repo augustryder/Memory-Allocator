@@ -62,7 +62,7 @@ team_t team = {
 
 #define MIN_BLOCK_SIZE ALIGN(DSIZE + 2 * sizeof(void *))
 
-#define NUM_LISTS 12
+#define NUM_LISTS 15
 static void *segregated_lists[NUM_LISTS];
 
 static void *heap_list_ptr;
@@ -115,7 +115,7 @@ void *mm_malloc(size_t size)
 {
     if (size == 0) return NULL;
 
-    uint32_t aligned_size = DSIZE + ALIGN(size);
+    uint32_t aligned_size = MAX(DSIZE + ALIGN(size), MIN_BLOCK_SIZE);
     void *bp = first_fit(aligned_size);
 
     if (bp != NULL)
@@ -152,21 +152,50 @@ void mm_free(void *ptr)
 }
 
 /*
- * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
+ * mm_realloc - Reallocates an allocated chunk with a different size.
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
+    uint32_t copy_size = GET_SIZE(HEADER_PTR(ptr));
+    uint32_t aligned_size = MAX(DSIZE + ALIGN(size), MIN_BLOCK_SIZE);
+    if (aligned_size <= copy_size)
+    {
+        // Reuse block
+        place(ptr, aligned_size);
+        return ptr;
+    }
 
-    newptr = mm_malloc(size);
-    if (newptr == NULL) return NULL;
-    copySize = *(size_t *)((char *)oldptr - ALIGN(sizeof(size_t)));
-    if (size < copySize) copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    // Check if we can use neighboring blocks
+    uint32_t coalesced_size = copy_size;
+    if (GET_ALLOC(HEADER_PTR(PREV_BLOCK_PTR(ptr))) == 0)
+        coalesced_size += GET_SIZE(HEADER_PTR(PREV_BLOCK_PTR(ptr)));
+    if (GET_ALLOC(HEADER_PTR(NEXT_BLOCK_PTR(ptr))) == 0)
+        coalesced_size += GET_SIZE(HEADER_PTR(NEXT_BLOCK_PTR(ptr)));
+
+    if (aligned_size <= coalesced_size)
+    {
+        PUT(HEADER_PTR(ptr), PACK(copy_size, 0));
+        PUT(FOOTER_PTR(ptr), PACK(copy_size, 0));
+        void *coalesced = coalesce(ptr);
+        remove_free(coalesced);
+        if (coalesced == ptr)
+        {
+            place(ptr, aligned_size);
+            return ptr;
+        }
+        memcpy(coalesced, ptr, copy_size - DSIZE);
+        place(coalesced, aligned_size);
+        return coalesced;
+    }
+
+    // Allocate new block and copy contents
+    void *new_ptr = mm_malloc(size);
+    if (new_ptr == NULL) return NULL;
+
+    memcpy(new_ptr, ptr, copy_size - DSIZE);
+
+    mm_free(ptr);
+    return new_ptr;
 }
 
 /*
@@ -240,7 +269,6 @@ static void *first_fit(uint32_t size)
 static void place(void *bp, uint32_t size)
 {
     uint32_t block_size = GET_SIZE(HEADER_PTR(bp));
-    size = MAX(size, MIN_BLOCK_SIZE);
 
     if (block_size - size >= MIN_BLOCK_SIZE)
     {
@@ -270,14 +298,17 @@ static int get_list_index(uint32_t size)
     if (size == 32) return 1;
     if (size == 40) return 2;
     if (size == 48) return 3;
-    if (size <= 64) return 4;
-    if (size <= 128) return 5;
-    if (size <= 256) return 6;
-    if (size <= 512) return 7;
-    if (size <= 1024) return 8;
-    if (size <= 2048) return 9;
-    if (size <= 4096) return 10;
-    return 11;
+    if (size == 56) return 4;
+    if (size == 64) return 5;
+    if (size <= 128) return 6;
+    if (size <= 256) return 7;
+    if (size <= 512) return 8;
+    if (size <= 1024) return 9;
+    if (size <= 2048) return 10;
+    if (size <= 4096) return 11;
+    if (size <= 8192) return 12;
+    if (size <= 16384) return 13;
+    return 14;
 }
 
 static void insert_free(void *bp)
@@ -298,7 +329,6 @@ static void insert_free(void *bp)
 static void remove_free(void *bp)
 {
     int idx = get_list_index(GET_SIZE(HEADER_PTR(bp)));
-    void *free_list_ptr = segregated_lists[idx];
 
     void *prev = prev_free(bp);
     void *next = next_free(bp);
@@ -310,8 +340,8 @@ static void remove_free(void *bp)
     }
     else if (prev == NULL && next != NULL)
     {
+        PUT_PTR(PREV_FREE_PTR(next), NULL);
         segregated_lists[idx] = next;
-        PUT_PTR(PREV_FREE_PTR(segregated_lists[idx]), NULL);
     }
     else if (prev != NULL && next == NULL)
     {
