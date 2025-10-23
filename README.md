@@ -2,8 +2,9 @@
 
 A dynamic memory allocator implemented using an explicit segregated free-list. 
 
-Lab taken from CS:APP.
-*Autograde score*: 85/100
+Lab taken from **CS:APP**.
+
+Autograde score: 85/100
 
 Future improvements:
 - Reduce number of free-list operations in coalesce and other functions?
