@@ -6,6 +6,8 @@ Lab taken from **CS:APP**.
 
 Autograde score: 85/100
 
+Solution in mm.c
+
 Future improvements:
 - Reduce number of free-list operations in coalesce and other functions?
 - Deferred coalescing?
