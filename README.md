@@ -1,12 +1,8 @@
-### CS:APP Malloc Lab
+### Dynamic Memory Allocator
 
 A dynamic memory allocator implemented using an explicit segregated free-list. 
 
 Lab taken from **CS:APP**.
-
-Autograde score: 85/100
-
-Solution in mm.c
 
 Future improvements:
 - Reduce number of free-list operations in coalesce and other functions?
